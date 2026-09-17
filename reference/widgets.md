@@ -99,8 +99,9 @@ ImageList 方案 1 个节点、不碰按键，代价是最多 30 档、没有滑
 
 **先看字形够不够用，这一条决定一切。**
 
-- **固定文案**走 `str.list` → 资源生成时按 `ResBuilder.xml` 的 `<Fonts>`
-  离线渲染（样例工程是宋体 `lfHeight="-16"` / `-32`）。
+- **固定文案**走 `str.list` → 资源生成时离线渲染，
+  字体和字号取**xls 里那个单元格自己的格式**（样例工程是宋体 12 号，
+  不是 `ResBuilder.xml` 的 `<Fonts>` —— 那个改了没用，见下面 Text 一节）。
 - **运行时字符串**走设备端字库。
 - **Number 和 Time 始终是图片拼的**（`number.list` 里 10 张图），不受字库影响。
 
@@ -269,7 +270,7 @@ ui_text_set_textw_by_id(LRC_TEXT_ID_NAME, file_name, len,
 |---|---|---|
 | 文字存在哪 | `多国语言_*.xls` | 代码里 / 运行时才知道 |
 | 怎么变成像素 | **资源生成时离线渲染成 1bpp 位图**，打进 `JL.str` | 设备端字库实时渲染 |
-| 字体配置 | 工程 `ResBuilder.xml` 的 `<Fonts>`（按页配） | `F_ASCII.PIX` / `F_UNIC.PIX`，由 `字库工具/FontTool.exe` 生成，**和 `<Fonts>` 无关** |
+| 字体/字号配在哪 | **xls 里那个单元格自己的字体和字号**（不是 `<Fonts>`，见 `platform.md` §6） | `F_ASCII.PIX` / `F_UNIC.PIX`，由 `字库工具/FontTool.exe` + `font.xml` 的 `<FontSize>` 生成 |
 | 跟随语言切换 | 是 | 否 |
 
 工程顶层的 `text_type: "1bpp"` / `texttype_type: "image"`、Text 的
@@ -277,6 +278,19 @@ ui_text_set_textw_by_id(LRC_TEXT_ID_NAME, file_name, len,
 
 **结论一：AI 加不了新的界面文案。** 要新增一条文案就得改 `.xls`，
 那是二进制文件，只能人工开表格改，改完还要重跑资源生成。
+
+> 读 `.xls` 倒是可以：`pip install xlrd` 之后
+> `xlrd.open_workbook(path, formatting_info=True)` 能读出每个单元格的
+> 文案**和字体字号**（`b.font_list[b.xf_list[sheet.cell_xf_index(r,c)].font_index]`）。
+> 查"m42 到底是哪句话""这条是几号字"不用开 Excel。
+
+**结论一点五：改字号也要改 xls，而且只能人工改。**
+固定文案的字号 = **那个单元格自己的字号**，不是 `ResBuilder.xml` 的 `<Fonts>`
+（证据见 `platform.md` §6）。做法是开 Excel 全选、把字号从 12 改成 24，
+存成 `.xls`(BIFF8) 别存成 xlsx，然后重跑 step2 + `copy_file.bat`。
+
+改完**先别烧录**，解析一下 `JL.str` 就知道成没成（方法见 `export.md` §6.5）——
+实测踩过一次"工具预览已经变大、但 `JL.str` 一个字节没变"。
 
 **结论二：预渲染成图片用 ImageList 摆上去是完全正当的替代。**
 因为固定文案本来走的就是"离线渲染成位图"这条路，自己渲染只是换了个渲染的人。
@@ -548,9 +562,62 @@ REGISTER_UI_EVENT_HANDLER(MUSIC_BAR)
 **摆法**
 
 - 条目放 `listwidget[]`，**每条是一个 NewLayout**，里面再放图标和文字。
-- 顶层键 `orientation` / `sizehw`(条目在滚动方向上的尺寸) / `space`(间距)。
 - `scroll_mode`：`SCROLL` 连续滚 / `PAGE` 整页翻。
 - `highlight_index` 默认高亮行。
+
+### ⚠⚠ 行高和间距是**节点顶层**的 `sizehw` / `space`，不在 `property` 里
+
+```json
+{"-class":"NewList", "-type":"VerticalList", "caption":"垂直列表",
+ "orientation":"Vertical",     ← 方向
+ "sizehw": 24,                 ← 行高(水平列表时是列宽)
+ "space": 8,                   ← 相邻条目的间距
+ "listwidget":[ ... ],
+ "property":[ ... ]}           ← 这里面只有 id/element_css/scroll_mode/highlight_index
+```
+
+**翻 `property[]` 是找不到它们的**，控件库 `control.json` 里列表控件的 `property`
+也确实只有 `scroll_mode` 和 `highlight_index` 两项 —— 于是很容易得出
+"列表没有行高参数"的错误结论，然后只去改条目的 rect。
+
+**设备端只认条目自己的 rect，不读 `sizehw`/`space`。**
+反编译 `ui_new.a` 的 `ui_grid_child_init()` 可见，滚动步进是**反推**出来的：
+
+```c
+y_interval = (max_top - min_top) - (row_num - 1) * 条目高;   // 遍历条目 rect 累出来的
+if (y_interval != 0 && row_num > 1) y_interval /= (row_num - 1);
+```
+
+资源侧也印证了这点：`struct ui_grid_info`（`control.h`，`.sty` 里 grid 的描述）
+只有 `page_mode` / `highlight_index` / `action` / `lua` / `info` 五项，
+**根本没有 sizehw、space、interval 这些字段**，它们进不了资源。
+
+**所以 `sizehw`/`space` 是 ui-tools 编辑器的排版参数**：它按这两个值生成条目 rect。
+两边对不上的后果是**下次在 GUI 里碰一下这个列表，工具很可能按旧的 `sizehw`
+把条目 rect 重排回去，把你改的行高冲掉**。
+
+改行高的正确做法是**三处一起改**，改完自查它们自洽：
+
+| 改什么 | 值 |
+|---|---|
+| 列表的 `sizehw` / `space` | 行高 / 间距 |
+| 每个条目 `listwidget[i]` 的 rect | 高 = `sizehw`，y 按 `sizehw + space` 递进 |
+| 条目内图标/文字的 rect | 在行高内垂直居中 |
+
+实战规格（240×240、24 号字）：`sizehw=28` `space=4`，步距 32，
+条目高 28、y = 0/32/64…，行内 24 高的图标 y=2。
+行高给 28 而不是 24 是因为**少数条目用西文字体，同样 24 号下位图高 27**。
+
+```sh
+# 改完核对三者自洽
+python - <<'EOF'
+import jlui
+for n,_,_ in jlui.page_nodes(page):
+    if jlui.typecode(n) == 5:
+        print(n['sizehw'], n['space'],
+              [jlui.rect_of(k)['y'] for k in n['listwidget']])
+EOF
+```
 
 **代码怎么调**
 

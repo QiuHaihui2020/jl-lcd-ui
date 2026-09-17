@@ -323,17 +323,42 @@ if ((css.background_color & 0xFFFFFF) != 0xFFFFFF)
 | 文字来源 | `多国语言_*.xls` | 代码传进来的 buf |
 | 变成像素的时机 | **资源生成时离线渲染**成 1bpp 位图 | 设备端实时渲染 |
 | 存在哪 | `JL.str` | —— |
-| 字体在哪配 | 工程 `ResBuilder.xml` 的 `<Fonts>`，**按页配** | `F_ASCII.PIX` / `F_UNIC.PIX` |
+| 字体/字号在哪配 | **`多国语言_*.xls` 里那个单元格自己的字体和字号** | `F_ASCII.PIX` / `F_UNIC.PIX` |
 | 那份字体资源谁生成 | ResBuilder（step2） | `LCD_UI工程/字库工具/FontTool.exe` + `font.xml` |
 | 怎么进固件 | 跟着 `JL.str` 走 | 烧录脚本单独 `packres … -o font` |
 
 工程顶层的 `text_type: "1bpp"` / `texttype_type: "image"` 说的就是第一条路。
 
+### ⚠⚠ strpic 的字号在 xls 单元格里，**不在** `ResBuilder.xml` 的 `<Fonts>`
+
+这条踩过一次，而且**改错地方之后一切现象都像改对了**，极难自己发现：
+工具预览会按新字号重画，但生成出来的 `JL.str` 一个字节都没变。
+
+`ResBuilder.xml` 里那 22 个 `<fontNN lfHeight="-16"/>` 看着就是字号配置，
+改它**完全不起作用**。实测记录：
+
+| 证据 | 结果 |
+|---|---|
+| xls 里 m1「蓝牙」的单元格是**宋体 12 号** | `JL.str` 里 m1 的位图正好 **24×12**（两个字，每字 12×12） |
+| xls 全表字号 12 / 8 / (Times New Roman)12 | `JL.str` 的 height 分布 **12×180 / 8×27 / 15×3** |
+| 把 `<Fonts>` 全改成 `-24` 重跑 step2 | `JL.str` 的 `git diff` **空的**，一个字节没变 |
+| 把 **xls 单元格**字号改成 24 重跑 | `JL.str` 16027→51991 字节，height 变 **24/27**，实机生效 |
+
+所以**要改固定文案的字号，就去开 xls 全选改字号**，别碰 `<Fonts>`。
+
+⚠ 同一行不同语言列可以是不同字体。上面 height=27 那几条就是因为那格用的是
+**Times New Roman**，西文字体在同样字号下行高比宋体大 3px —— 行高按 24 排会被裁掉。
+
+> `<Fonts>` 到底管什么没查出来。已知的是：它不参与 strpic 渲染，
+> 而且 `<Fonts>` 有 22 个条目、`LanguageList` 正好也是 22 种语言。
+> 在结论出来之前，**别把它当字号开关用**。
+
 两个推论：
 
-- **改 `ResBuilder.xml` 的 `<Fonts>` 只影响固定文案**，运行时字符串的字号不变。
 - **工程 `config/` 下的 `m*.png` 是离线渲染的中间产物**，
   json 里一处都没引用，别当成可以摆进界面的图片。
+  而且它**不一定跟着 step2 更新**（实测跑完 step2 后这批 png 还是一个月前的），
+  所以**不能拿它的尺寸判断当前字号** —— 要判断就去解析 `JL.str`（见 `export.md`）。
 
 ### 运行时文字的合成
 

@@ -176,6 +176,33 @@ CLOCK_TIME_HMS  fmt='h'    内容 76  rect 76
 
 ---
 
+## 5.2 ⚠ 改图片目录名，要同步改 json 里的全部引用
+
+给图片目录改名/合并（`pic_ui` + `pic_music` → `pic_tft_ui` 这种）时，
+工程 json 里的路径**不会跟着变**。后果是整个工程的图全部失效，
+而且**只在跑资源生成时才暴露**，编辑器里看着还是好的。
+
+实战里撞见过一次：922 处引用指向已经不存在的目录，
+`check_project.py` 报了 916 条「图片找不到」。**这个 note 不要当噪音略过**，
+它是 ERROR 级别的问题只是没归到 ERROR。
+
+```sh
+python tools/check_project.py <工程.json> 2>&1 | grep -c "图片找不到"   # 应当是 0
+```
+
+改名之后的修法就是全文替换，然后用上面那条复查归零：
+
+```python
+s = io.open(PRJ, encoding='utf-8', newline='').read()
+s = s.replace('config/旧目录/', 'config/新目录/')
+io.open(PRJ, 'w', encoding='utf-8', newline='').write(s)   # newline='' 保持原样，见 project.md §0
+```
+
+⚠ **别用 git bash 的 `ls` 去确认目录在不在。** 实测 `ls config/pic_ui` 会列出
+`config/pic_tft_ui` 的内容（路径匹配把你骗了），而 Python 的
+`os.path.isdir('config/pic_ui')` 老老实实返回 `False`。
+**验证目录/文件存在性用 `os.listdir()` 打 `repr`，别用 shell 的 ls。**
+
 ## 5.5 ⚠ 透明区的 RGB 也要检查，不只是 alpha
 
 "透明没做对"有**两种**，机理不同，都只在真机上露馅：

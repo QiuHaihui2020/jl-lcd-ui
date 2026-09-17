@@ -12,7 +12,8 @@
 <工程>.json
    │  ① ui-tools.exe（step1）保存工程
    ├─► ename.h               控件 ID 头
-   └─► ResBuilder.xml        打包配置（图片清单、字体、颜色表、excel 路径）
+   └─► ResBuilder.xml        打包配置（图片清单、颜色表、excel 路径）
+                             ⚠ 里面的 <Fonts> 不是 strpic 的字号，见 §6
    │
    │  ② QtToolBin.exe（step2）生成资源
    ├─► project.bin           布局（二进制）
@@ -165,7 +166,55 @@ isd_download.exe ... -ex_flash res.bin ...
 
 **多语言产品就老老实实改 xls。**
 
-## 7. 字库是另一份资源，和 `<Fonts>` 无关
+### ⚠⚠ 字号也在 xls 里 —— 是**单元格自己的字号**，不是 `<Fonts>`
+
+`ResBuilder.xml` 里那 22 个 `<fontNN lfHeight="-16"/>` 看着像字号配置，
+**改它对 strpic 完全没用**。要改固定文案字号只有一条路：开 Excel 全选改字号，
+存成 `.xls`(BIFF8，别存成 xlsx)，重跑 step2 + `copy_file.bat`。
+完整实测证据见 `platform.md` §6。
+
+⚠ 同一行不同语言列可以是不同字体，**行高要按最高的那个留**。
+实测样例工程里少数条目用的是 Times New Roman，同样 24 号下位图高 27 而不是 24。
+
+## 6.5 烧录前验字号：直接解析 `JL.str`
+
+改完字号**不要靠上板看**。`JL.str` 的格式很简单，解析出来就知道每条文案的位图多大：
+
+```
+0x00  "RU40" 魔数 + 头部
+0x20  起，每条 20 字节：
+      u16 lang   语言编号（见 font/language_list.h，1=简体中文）
+      u16 id     字符串编号，对应 project/result_str_index.h 的 #define M42 <id>
+      u16 width  位图宽
+      u16 height 位图高
+      u32 len    数据长度，等于 width*height/8（1bpp，可用来自检解析对不对）
+      u32 offset 数据偏移
+      u32 crc
+```
+
+```python
+import struct
+d = open('JL.str','rb').read()
+off = 0x20
+while off + 20 <= len(d):
+    lang, sid, w, h, ln, o, crc = struct.unpack_from('<HHHHIII', d, off)
+    if o == 0 or o > len(d) or not (0 < w < 1000) or not (0 < h < 200):
+        break
+    ...
+    off += 20
+```
+
+配合 `result_str_index.h`（`#define M31 9` 这样的 m 号→id 映射）就能精确对到
+每个 Text 控件，算出**哪些文案会超出 rect** —— 比上板一页页看快得多。
+
+两个实测出来的判据：
+
+- **`git diff` 是空的就是没生效。** `JL.str` 在版本库里，改完字号重新生成后
+  如果 `git diff` 没有变化，说明这次生成完全没受影响（mtime 变了不算数）。
+- **`m*.png` 不能当依据。** `config/` 下那批中间产物**不一定跟着 step2 更新**，
+  实测跑完 step2 之后它们还是一个月前的时间戳。
+
+## 7. 字库是另一份资源，和 xls 那条路也无关
 
 运行时字符串（`ui_text_set_text_by_id()` 放歌名这类）走的是设备端点阵字库，
 **不是** `ResBuilder.xml` 里配的那个字体：
@@ -178,8 +227,16 @@ LCD_UI工程/字库工具/FontTool.exe + font.xml
    packres.exe -keep-suffix-case F_ASCII.PIX F_UNIC.PIX ascii.res -n res -o font
 ```
 
-所以：**改 `ResBuilder.xml` 的 `<Fonts>` 只影响固定文案的字号，
-运行时字符串的字号一点都不会变。** 要改后者得用字库工具重出 `.PIX`。
+所以两条路的字号是**分别配、分别改**的：
+
+| | 固定文案（strpic） | 运行时字符串（text/ascii） |
+|---|---|---|
+| 字号配在哪 | xls 单元格的字号 | `字库工具/font.xml` 的 `<FontSize Value="24"/>` |
+| 改完要跑什么 | step2 + `copy_file.bat` | `FontTool.exe` 重出 `.PIX` |
+
+⚠ 这两处**不会自动对齐**，实测踩过：字库已经是 24 号（歌名显示正常），
+xls 还是 12 号，于是同一个界面上歌名 24 号、列表文字 12 号。
+「只有一部分文字变大了」就是这个症状。
 
 ## 7.5 导出后的自检：`result.xml` + `JL.res` 增量
 

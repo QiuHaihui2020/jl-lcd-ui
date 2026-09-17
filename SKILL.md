@@ -188,6 +188,8 @@ ui_id2type(id) = (id >> 10) & 0x7f    // 控件类型码 CTRL_TYPE_*
 | Time/Number 的分隔符**按出现顺序**取 `delimiter.list[0][1][2]`，<br>和写的是 `:` 还是 `-` 无关 | `project.md` |
 | Number 内部是 **u16**，范围 0..65535，**显示不了负数**（-4 会变 65532） | `widgets.md` |
 | Text 的 `code` 属性**决定能调哪组 API**，排版时就定死 | `widgets.md` |
+| **strpic 的字号在 xls 单元格里**，改 `ResBuilder.xml` 的 `<Fonts>` 没用<br>（改错了还会像改对了：工具预览会变，`JL.str` 一个字节不变） | `platform.md` |
+| 列表的**行高/间距是节点顶层的 `sizehw`/`space`**，翻 `property[]` 找不到；<br>它们和条目 rect 必须一起改 | `widgets.md` |
 | 框架**不拷贝字符串**，`ui_text_set_*` 传的 buf 必须是全局/静态 | `widgets.md` |
 | 要透明必须 **RGBA PNG + `ARGB8565`**，代价是 +50% 资源 | `platform.md` |
 | 框架**不缩放图片**，图比 rect 大就被裁 | `platform.md` |
@@ -367,6 +369,12 @@ REGISTER_UI_EVENT_HANDLER(ID_WINDOW_BT)
 
 排一个新界面的顺序：`widgets.md` 选控件 → `authoring.md` 搭结构 →
 `project.md` 落成 json → `assets.md` 做图 → `app.md` 写回调 → `export.md` 导出。
+
+> ⚠ **要动哪个控件，就把 `widgets.md` 里那个控件那一节读完。**
+> 实战里为了改列表行高，只读了 Text 一节就去改条目 rect，
+> 而 `sizehw`/`space` 就写在同一个文件的列表一节里 ——
+> 结果绕了一大圈去反编译，还改漏了参数。
+> 按关键词 grep 比按行号截一段读更靠谱。
 
 ## 随 skill 带的三个脚本
 

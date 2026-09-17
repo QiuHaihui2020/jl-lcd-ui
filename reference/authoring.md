@@ -32,7 +32,8 @@
             config/                  图片资源，按子目录组织
             ename.h                  控件 ID 头（生成物）
             copy_file.bat            把产物拷进固件树
-            ResBuilder.xml           打包配置（图片清单/字体/excel 路径）
+            ResBuilder.xml           打包配置（图片清单/颜色表/excel 路径；
+                                     里面的 <Fonts> 不是 strpic 字号，别改它）
             project.bin result.bin result.str  ← 生成物
     <工程B>/...                      同一套工具下可以有多个工程
 ```
