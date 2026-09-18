@@ -388,6 +388,64 @@ res 分区，运行时通过 `res_fopen()` 按路径读。IMB 任务可以**直�
 
 资源放内置 flash 还是外挂 flash 由 `TCFG_UI_RES_MEDIUM` 决定，见 `export.md`。
 
+### ⚠⚠ 每次 `ui_pic_show_image_by_id()` 都要重读一遍资源文件
+
+**要按拍刷控件（律动条、动画、进度条）之前必须先知道这条，否则设计一开始就是错的。**
+
+反编译 `ui_new.a` / `res_new.a` 的调用链：
+
+```
+ui_pic_show_image_by_id(id, index)
+└─ ui_pic_set_image_index()
+   ├─ ui_core_load_widget_info()    → 5× res_fread + 3× res_fseek
+   └─ ui_core_load_imagelist() ×3   → 9× res_fread + 6× res_fseek
+└─ ui_core_redraw()                   ← 合成在这儿，反而不是大头
+```
+
+**一次切图约 14 次读 + 9 次 seek**，打在资源文件上。元数据**不缓存**是设计使然 ——
+资源管理器只有唯一一份 `static union ui_control_info` 缓冲（就是铁律 5 里那个），
+所以每次都得重新读。
+
+而 `res_fread()` 走哪条路由 `TCFG_UI_RES_MEDIUM` 决定：
+
+| 配置 | `res_fread` 实际落到 | 相对成本 |
+|---|---|---|
+| `UI_RES_MEDIUM_INSIDE_FLASH` | `resfile_read()`，直接按偏移读 res 分区 | 低 |
+| `UI_RES_MEDIUM_EXTERN_FLASH` | **`fread()`，过一遍 vfs + FAT + SFC** | 高 |
+
+实测数据（240×240、16 根律动条、120ms 一拍、`EXTERN_FLASH` 配置）：
+
+- 每次 `ui_pic_show_image_by_id()` ≈ **5.5ms**
+- 16 根 × 8.3 拍/秒 × 23 次文件操作 ≈ **3000 次/秒**
+- `ui` 任务因此长期占 **70~76% 的单核**，同页歌词渲染只占 3%
+
+所以：
+
+- **按拍刷多个控件的页面，先算这笔账再定刷新率和控件数**，别等上板发现
+  `timer_no_response` 刷屏再回来改。
+- "值没变就不刷"（`app.md` 要点 2）不是优化，是**必需**。
+- 真要降载，按性价比是：切 `INSIDE_FLASH`（**整个 UI 都受益**，代价是烧写流程变）
+  > 降刷新率 > 减控件数。
+
+### ⚠ `ui_lock_layer()` / `ui_unlock_layer()` 在 br28 上是死代码
+
+头文件（`ui.h`）写得像是"锁住图层批量画完再一次推给 IMB"，看着正好能解决上面
+那个问题。**但它在这个平台上什么都不做。** 反编译 `ui_core.c.o`，两个函数结构
+完全对称，都卡在同一个判断上：
+
+```llvm
+%4 = load i8, i8* %buf_num              ; dc->buf_num
+%cmp13 = icmp eq i8 %4, 2               ; == 2 ?
+br i1 %cmp13, label %land.lhs.true, label %cleanup   ; 不等就直接 return 0
+```
+
+而 `ui_platform.c` 里是 **`dc->buf_num = 1;` 写死**，全工程唯一一处赋值；
+扫整个 `ui_new.a`，对 `draw_context` 这个字段的 15 处访问**全是 load、零 store**。
+也就是双缓冲图层这条路在 br28 的平台层没实现，lock/unlock 永远走不进去。
+
+（顺带说：就算能用也解决不了上面那个问题 —— 那笔开销在读资源元数据，
+不在最后那次推送。）
+
 ## 8. 屏驱动怎么加一块新屏
 
 一块屏一个 `.c`，放 `cpu/<芯片>/ui_driver/lcd_drive/lcd_spi/`（或 `lcd_mcu`/`lcd_rgb`）：

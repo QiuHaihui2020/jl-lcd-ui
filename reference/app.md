@@ -390,7 +390,8 @@ static void timer_add_update(void *priv)
 {
     ...
     if (ui_get_disp_status_by_id(CLOCK_LAYOUT) <= 0) {
-        /* 主界面被菜单/音量层盖住了，标脏让它回来时整体重刷一次 */
+        /* 注意：这个判断只在弹层真的 ui_hide 了主布局时才成立，
+         * 同页兄弟布局盖上来是查不出来的，见下面那条 ⚠ */
         s_weather.is_dirty = 1;
         s_week_last = 0xFF;
     } else if (s_weather.is_dirty) {
@@ -402,10 +403,8 @@ static void timer_add_update(void *priv)
 
 三个要点（**每一条都能独立从框架行为推出来，不依赖这个页面的具体业务**）：
 
-1. **被盖住时不刷，只标脏。**
-   依据：`ui_get_disp_status_by_id()` 能区分"显示中/隐藏/不存在"（见上一节），
-   而弹层盖住主界面时刷屏纯属白费。回来时要保证整体重刷一次 ——
-   上面那个 `else if` 就是干这个的。
+1. **被盖住时不刷，只标脏。** 回来时要保证整体重刷一次 —— 上面那个 `else if` 就是干这个的。
+   但**怎么判断"被盖住"要看清楚**，见下面那条 ⚠。
 2. **"值没变就不刷"另外用一个变量记**（例子里的 `s_week_last`）。
    依据：`ui_pic_show_image_by_id()` 内部会 `ui_core_redraw()`，
    **每次调用都触发重绘**，不判重就是每 500ms 重画一次，白白占合成任务和功耗。
@@ -415,6 +414,123 @@ static void timer_add_update(void *priv)
 
 这三条是通则。至于"缓存结构体长什么样""定时器 500ms"这些，是那一页的具体做法，
 照搬时按自己的刷新需求定。
+
+### ⚠⚠ `ui_get_disp_status_by_id()` 判不出"被同页弹层盖住"
+
+**这是本 skill 以前教错过的地方，实测踩过，代价是一整轮烧板。**
+
+彩屏工程的弹层是"同一页里另一个 `invisible` 的布局"（铁律 7）。`ui_show(弹层)`
+**不会去 hide 主布局** —— 主布局还在显示中，只是被压在下面。所以：
+
+```c
+/* ✗ 永远不成立：弹层盖着主界面时，主布局的 disp 状态仍然是"显示" */
+if (ui_get_disp_status_by_id(XXX_LAYOUT) <= 0) { return; }
+```
+
+它只在**弹层显式 hide 了主布局**时才有效。这种用法确实存在（例如蓝牙通话层
+`BT_LAYOUT_CALL` 是 `ui_hide(BT_LAYOUT)` 之后再显示自己的），但那是少数。
+**默认情况下你查不出覆盖，框架也没有"这个控件当前是否被别人压着"的接口。**
+
+#### 为什么必须判出来：被盖住的控件，刷屏不但没用，还更贵
+
+框架**不会**因为控件被盖住就省掉这次 blit。它照样重画该控件那块区域，
+然后还得把压在上面的弹层重新合成一遍 —— 单层直写变成双层合成。
+所以"被盖住还按拍刷"是**比平时更重**的浪费，实测表现为弹窗一出来
+`timer_no_response: ui` 立刻刷屏。
+
+#### 正确做法：让弹层自己说
+
+唯一可靠的信号源是弹层自己的 `ON_CHANGE_SHOW` / `ON_CHANGE_HIDE`
+（**不能用 INIT/RELEASE，见下一节**）：
+
+```c
+/* 页面侧维护"谁盖着我"，按 ID 记账而不是简单计数 */
+#define PAGE_COVER_MAX  5           /* 菜单/EQ/循环/文件/音量 */
+static int s_cover_id[PAGE_COVER_MAX];
+static u8  s_covers;
+
+static void page_cover_enter(int id)
+{
+    u8 i;
+    for (i = 0; i < s_covers; i++) {
+        if (s_cover_id[i] == id) { return; }        /* 幂等 */
+    }
+    if (s_covers < PAGE_COVER_MAX) { s_cover_id[s_covers++] = id; }
+}
+
+static void page_cover_exit(int id)
+{
+    u8 i;
+    for (i = 0; i < s_covers; i++) {
+        if (s_cover_id[i] == id) {
+            s_cover_id[i] = s_cover_id[--s_covers];  /* 拿末尾填空位 */
+            break;
+        }
+    }
+}
+
+/* 每个会盖住主界面的弹层都注册这个 */
+static int page_popup_onchange(void *ctr, enum element_change_event e, void *arg)
+{
+    struct layout *layout = (struct layout *)ctr;
+    if (e == ON_CHANGE_SHOW) {
+        page_cover_enter(layout->elm.id);
+    } else if (e == ON_CHANGE_HIDE) {
+        page_cover_exit(layout->elm.id);
+    }
+    return FALSE;       /* 别把弹层自己的绘制吞掉 */
+}
+
+/* 定时器里 */
+if (s_covers) { return; }
+```
+
+两个细节值得照抄：
+
+- **按 ID 记账，不要用简单计数。** 某个弹层漏发一次配对事件时，只会影响它
+  自己，不会把整页的刷新永久关掉。计数一旦不配平就是"界面再也不动了"，
+  是用户一眼能看见、又极难复现的故障。同一 ID 重复 `enter` 幂等，所以
+  **弹层套弹层**（菜单里再开 EQ，两个都在显示）也是对的。
+- **进页面时清一次**（在主布局的 `ON_CHANGE_INIT` 或 window 的
+  `ON_CHANGE_INIT` 里 `s_covers = 0`）。上次退出页面时如果有弹层没走到
+  `HIDE`，这里能自愈。
+
+#### 恢复时要不要补刷？分两种
+
+- **图片类控件（`ui_pic_show_image_by_id`）要补。** 自己维护的"上次刷了哪一档"
+  缓存（要点 2 的 `s_week_last`）必须在恢复时清掉，否则"值没变就不刷"会把
+  恢复后的第一拍挡掉，留一片空白。
+- **文字类控件（`ui_text_set_*`）不用补。** 反编译 `ui_new.a` 可以看到
+  `ui_text_set_wstr()` 只 `store` 字符串指针、**不拷贝内容**，元素一直握着
+  那个指针；弹层收起时 `ui_core_hide()` 会走 `ui_core_redraw()`，用这个指针
+  把文字重新渲染出来。所以遮挡期间直接跳过更新是安全的。
+  （反过来说：那块内存在控件还显示着的时候不能复用，见 `widgets.md`。）
+
+---
+
+### ⚠⚠ 弹层的显示/隐藏配对，只能用 `ON_CHANGE_SHOW` / `ON_CHANGE_HIDE`
+
+`ON_CHANGE_INIT` 只在 `layout_init()` 里发**一次**，`ON_CHANGE_RELEASE` 只在
+`layout_release()` 里发 —— 而**弹层反复弹出收起并不销毁控件**（见上面"隐藏：不销毁"）。
+反编译 `ui_new.a` 可以确认这四个事件各自的发出者：
+
+| 事件 | 发出者 | 时机 |
+|---|---|---|
+| `ON_CHANGE_SHOW` | `ui_core_show_rect()` | **每次**显示 |
+| `ON_CHANGE_HIDE` | `ui_core_hide()` | **每次**隐藏 |
+| `ON_CHANGE_INIT` | `layout_init()` | 控件创建，仅一次 |
+| `ON_CHANGE_RELEASE` | `layout_release()` | 控件销毁（一般是退出页面） |
+
+所以用 INIT/RELEASE 做"弹出时暂停 / 收起时恢复"的结果是：
+
+> 第一次弹窗暂停之后，**永远不会恢复**（直到退出页面）。
+
+而且这个 bug 很难从现象上认出来 —— 第一次弹窗的行为完全正确，只有第二次
+才看得出不对。**布局是懒创建的**，`ON_CHANGE_INIT` 是在第一次 `ui_show`
+时才发，所以连"进页面就坏掉"这种明显症状都没有。
+
+注意这条和铁律 5 不矛盾：铁律 5 说的是**在这些回调里不能碰别的控件**，
+这里做的是改自己模块的标志位，不碰任何 `ui_*` API。
 
 ---
 
