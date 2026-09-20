@@ -208,10 +208,14 @@ def main():
 
             # --- 多份 element_css：第二份是高亮态，框架选中时整份换掉
             #
-            # Time 控件支持两份 css。time_onchange 收到 highlight 事件(event 8)时
-            # 直接 ui_core_set_element_css() 换成第二份 —— rect 也在里面。所以两份
-            # 唯一该有的差异是 background_color(常态透明 / 高亮填一块底色)，
-            # 其余字段不一致就是漏改，表现为"选中之后控件整个跳到别的位置"。
+            # 布局/图片/文字/时间都支持两份 css：反编译 layout.c 的 layout_onchange
+            # 可见 switch(event) 里 event==8(highlight) 的分支先判 css_num > 1，
+            # 再按选中与否整份换成 element_css1[0] / [1]；ui_pic.c / ui_text.c /
+            # ui_time.c 同样。rect 也在这份里，所以【几何字段】不一致就是漏改，
+            # 表现为"选中之后控件整个跳到别的位置"。
+            #
+            # 该有差异的是外观两项：background_color(填一块底色，直角) 和
+            # background_image(挂一张图，能做圆角)。两者都跳过。
             #
             # 噪音量：本仓库两个工程一共只有 8 个控件带两份 css(时钟设置 6 个 +
             # 闹钟设置 2 个)，修完为 0 条，所以这条按"存在即报"是安全的。
@@ -220,8 +224,8 @@ def main():
                 for gi in range(1, len(groups)):
                     diff = []
                     for key in groups[0]:
-                        if key == 'background_color':
-                            continue        # 这一项本来就该不一样
+                        if key in ('background_color', 'background_image'):
+                            continue        # 这两项本来就该不一样，是高亮态的表现手段
                         a, b = groups[0].get(key), groups[gi].get(key)
                         if a != b:
                             diff.append(key)

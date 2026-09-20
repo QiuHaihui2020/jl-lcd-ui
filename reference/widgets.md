@@ -463,27 +463,87 @@ ui_time_update_by_id(BT_MUSIC_CUR_TIME, &tm);
 （实现判的是 `number` 的第一个**资源索引**为 0 或 0xFFFF，不是数组长度，
 效果上等价：没配图就没索引。）
 
-### ⚠⚠ Time 的双 css：选中时整份 css 被换掉，rect 也在里面
+### ⚠⚠ 双 css：做"选中高亮背景"的正路
 
-**Time 是唯一会带两份 `element_css` 的控件**（其它控件都只有一份）。
-`ui_highlight_element_by_id()` 走到 `time_onchange` 的 `event 8` 分支：
+**一个控件可以带两份 `element_css`：css[0] 普通态、css[1] 高亮态，
+框架在选中时把【整份】换掉。** 这是做"选中行整行高亮"的正路，
+而且**应用代码一行都不用写** —— 配好工程就自动生效。
+
+支持的控件比想象的多。`ui_core_set_element_css` 的调用方（反编译 `ui_new.a`）：
+
+| 目标文件 | 控件 |
+|---|---|
+| `layout.c` | **NewLayout** ← 整行高亮靠它 |
+| `ui_pic.c` | ImageList |
+| `ui_text.c` | Text |
+| `ui_time.c` | Time |
+
+以 `layout_onchange` 为例，`switch(event)` 里 `i32 8`(highlight) 的分支：
 
 ```llvm
-%43 = load i8, ...                         ; css 份数
-%cmp.i = icmp ugt i8 %43, 1                ; 有 2 份才切
-%tobool.i101 = icmp ne i8* %arg, null      ; arg = 1 高亮 / NULL 取消
-%arrayidx.i102 = ... i32 10, i32 %lnot.ext.i   ; css[0]=普通, css[1]=高亮
-%call.i103 = tail call i8* @ui_core_load_css(...)
-%call7.i   = tail call ... @ui_core_set_element_css(_time, css)   ; ← 整份换
+%cmp.i = icmp ugt i8 %29, 1                ; css 份数 > 1 才切
+%tobool.i = icmp ne i8* %arg, null         ; arg 非空=选中 / NULL=取消
+%33 = getelementptr ... %struct.element_css1* %32, i32 %lnot.ext.i, i32 0
+%call9.i = tail call ... @ui_core_set_element_css(%_layout, %34)   ; ← 整份换
 ```
 
-换的是**整份 css**，`rect` / `align` / `border` 全在里面。所以这两份
-**唯一该有的差异是 `background_color`**（普通=空串/透明，高亮=填一块底色，
-那就是"选中高亮背景"），其余字段必须逐字一致。
+换的是**整份 css**，`rect` / `align` / `border` 全在里面。所以两份
+**该有的差异只在这两项外观字段**，其余必须逐字一致：
 
-⚠ **`ui-tools` 的属性面板只编辑第一份。** 在 GUI 里挪动一个 Time 控件的位置，
-第二份 rect 不会跟着动 —— 排版改一次就错位一次，而且编辑器预览里完全看不出来
-（预览只画普通态）。
+| 改哪项 | 效果 | 代价 |
+|---|---|---|
+| `background_color` | `fill_rect` 填一块底色 | **只能是直角** |
+| `background_image` | 画一张背景图 | **可以圆角**；图的尺寸必须等于 rect(框架不缩放) |
+
+样例工程时钟页那 8 个 Time 改的是 `background_color`（`#ff1e5fb4`）；
+要圆角高亮行就改 `background_image`，挂一张和行等大的圆角图。
+
+#### 实战：整行高亮怎么摆
+
+给**行布局**（列表 `listwidget[]` 里的那个 NewLayout）加第二份 css 就行：
+
+```
+BT_MENU_LIST_EQ            NewLayout 224x30
+  css[0] background_image = ""                      ← 常态
+  css[1] background_image = "config/pic_mp3/ROW30_HL.png"   ← 选中，圆角蓝底
+├ BT_MENU_LIST_EQ_PIC      左侧图标
+├ BT_MENU_LIST_EQ_TEXT     文字
+└ BT_UI_MENU_EQ_ARR        右侧箭头
+```
+
+⚠ **别再另摆一个"行底图片控件"**。那样每行多一个 ImageList、多一个 IMB
+合成任务、多一次资源读取，而效果和双 css 完全一样。实战里一个 7 行的 EQ 列表
+就此省掉 7 个控件。
+
+#### ⚠ 分清两种"高亮"，它们的驱动方是不同的
+
+| | 含义 | 谁负责 |
+|---|---|---|
+| **光标高亮** | 按键停在哪一行 | **框架**，双 css / `highlight_image` 全自动 |
+| **持久状态** | 比如"当前生效的是哪个 EQ" | **代码**，`ui_pic_set_image_index(pic, 1)` 切第二帧 |
+
+两者混淆会出事：把 EQ 图标的图集从 2 张删成 1 张之后，
+`eq_pic_common_onchange` 里那句 `set_image_index(pic, 1)` 就切不动了
+（`ui_pic_set_image_index` 内部有 `icmp sgt %num, %index` 的边界检查，
+越界直接 return，不报错也不生效）。
+
+想合二为一，就在列表的 `ON_CHANGE_INIT` 里把光标落到那个持久状态上：
+
+```c
+/* 进 EQ 菜单时光标直接停在当前生效的 EQ 上，于是"高亮行"就是"当前模式" */
+case ON_CHANGE_INIT:
+    ui_grid_set_item(grid, eq_mode_get_cur() % BT_EQ_MODE_NUM);
+    break;
+```
+
+⚠ 这里必须用 `ui_grid_set_item()` 这个**宏**（`(grid)->hi_index = index`，
+纯写字段），不能用 `ui_grid_set_hi_index()` 函数 —— `ON_CHANGE_INIT` 是建页面
+那趟遍历里发的，此时碰别的控件(行布局)会重入绘制，见 SKILL.md 铁律 5。
+
+#### ⚠ `ui-tools` 的属性面板只编辑第一份
+
+在 GUI 里挪动一个带双 css 的控件，第二份 rect 不会跟着动 —— 排版改一次就错位
+一次，而且编辑器预览里完全看不出来（预览只画普通态）。
 
 症状：**平时位置正常，一选中就整个跳到别处**，高亮底色和数字一起跑偏。
 
@@ -491,8 +551,8 @@ ui_time_update_by_id(BT_MUSIC_CUR_TIME, &tm);
 两份 rect 从建页起就没对齐过（高亮那份 y 少 60），`9d17348` 做 240×240 适配时
 只改了第一份，差距被拉大到整屏可见。
 
-`check_project.py` 现在会把这种情况报成 **ERROR**（两个样例工程修完都是 0 条）。
-GUI 里挪过这类控件之后跑一次它。
+`check_project.py` 会把"两份除 `background_color`/`background_image` 外还有
+差异"报成 **ERROR**。GUI 里挪过这类控件之后跑一次它。
 
 ---
 
@@ -619,6 +679,10 @@ REGISTER_UI_EVENT_HANDLER(MUSIC_BAR)
 ---
 
 ## VerticalList / HorizontalList / NewGrid —— 列表
+
+> 选中行要**整行高亮背景**：给行布局加第二份 `element_css`，
+> 见上面「双 css：做"选中高亮背景"的正路」。框架自动切，不用写代码，
+> 也不用另摆行底图片控件。
 
 **什么时候用**：菜单、文件列表、EQ 选项这类可滚动的多条目。
 

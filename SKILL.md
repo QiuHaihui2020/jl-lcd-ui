@@ -202,7 +202,7 @@ ui_id2type(id) = (id >> 10) & 0x7f    // 控件类型码 CTRL_TYPE_*
 | **每次 `ui_pic_show_image_by_id()` 要重读 ~14 次资源文件**（元数据不缓存）；<br>按拍刷多个控件之前先算这笔账 | `platform.md` |
 | `ui_lock_layer()` / `ui_unlock_layer()` 在 br28 上是**死代码**（`dc->buf_num` 写死 1） | `platform.md` |
 | Text 两个同名 `color` 里**第二个是选中高亮色**，去重时合并会静默丢掉高亮；<br>两项写成同值也一样没高亮（本仓库约定 常态 `#ffa6b8d8` / 高亮 `#ffffffff`） | `widgets.md` |
-| **Time 可以带两份 `element_css`**，第二份是高亮态，选中时框架整份换掉（`rect` 也在里面）；<br>`ui-tools` 只编辑第一份，GUI 里挪过位置就会错位，症状是"一选中控件就跳走" | `widgets.md` |
+| **布局/图片/文字/时间都可以带两份 `element_css`**，第二份是高亮态，选中时框架<br>整份换掉（`rect` 也在里面）。这是做**整行高亮**的正路，**应用代码一行不用写**；<br>两份的差异只该在 `background_color`(直角) 或 `background_image`(可圆角)。<br>`ui-tools` 只编辑第一份，GUI 里挪过位置就会错位，症状是"一选中控件就跳走" | `widgets.md` |
 | `RING_MAX_TASK=40` 不是控件数上限，是任务块缓存大小 | `platform.md` |
 | **Text 默认是黑字**，改页面底色必须同时扫一遍这页所有 Text 的 color | `widgets.md` |
 | **slider 会吃掉方向键**（37/38/39/40），按键驱动的页面放进度条必踩 | `widgets.md` |
