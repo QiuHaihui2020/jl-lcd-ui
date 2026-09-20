@@ -381,6 +381,25 @@ def css_of(node):
         return {}
 
 
+def css_groups_of(node):
+    """element_css 的【每一份】，按出现顺序返回 [{name: 属性项}, ...]。
+
+    绝大多数控件只有一份。Time 可以有两份：css[0] 普通态、css[1] 高亮态，
+    选中时框架整份换掉(见 widgets.md 的"Time 的双 css")。css_of() 只看
+    第一份，要比对高亮态必须用这个。
+    """
+    p = prop_by_name(node, 'element_css')
+    if not p:
+        return []
+    out = []
+    for grp in p.get('struct', []) or []:
+        try:
+            out.append({q.get('-name'): q for q in grp})
+        except (AttributeError, TypeError):
+            pass
+    return out
+
+
 def rect_of(node):
     """控件的 rect 在 element_css 里；页节点的 rect 是 property[0] 下的裸对象。"""
     c = css_of(node)

@@ -14,6 +14,8 @@
     - rect 宽或高为 0
     - 页节点的 rect 不是裸对象(多带了 -name 键)
     - 组合控件(slider/vslider/watch/compass/progressbar)的零件 caption 被改过
+    - 控件有两份 element_css，但两份除 background_color 外还有别的差异
+      (第二份是高亮态，选中时整份换掉；rect 写错就是"选中后控件跳位")
     - 页 rect 和 --size 不一致
     - Time/Number 按 format 算的内容总宽超过 rect(会静默重叠或被裁)
 
@@ -54,7 +56,7 @@ import collections
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from jlui import (setup_stdout, load, iter_pages, page_nodes, typecode, ename_of,
-                  css_of, rect_of, color_format_of, prop_by_name, props,
+                  css_of, css_groups_of, rect_of, color_format_of, prop_by_name, props,
                   iter_images, read_image_size, png_alpha_stats,
                   measure_digit_content,
                   TYPENAME, COMPOSITE_PARTS, CHILD_KEYS, RING_MAX_TASK)
@@ -203,6 +205,40 @@ def main():
             is_hidden = str(inv.get('value', inv.get('default'))).lower() == 'true'
             if tc is not None and tc not in (3, 4) and not is_hidden:
                 visible_ctrl += 1
+
+            # --- 多份 element_css：第二份是高亮态，框架选中时整份换掉
+            #
+            # Time 控件支持两份 css。time_onchange 收到 highlight 事件(event 8)时
+            # 直接 ui_core_set_element_css() 换成第二份 —— rect 也在里面。所以两份
+            # 唯一该有的差异是 background_color(常态透明 / 高亮填一块底色)，
+            # 其余字段不一致就是漏改，表现为"选中之后控件整个跳到别的位置"。
+            #
+            # 噪音量：本仓库两个工程一共只有 8 个控件带两份 css(时钟设置 6 个 +
+            # 闹钟设置 2 个)，修完为 0 条，所以这条按"存在即报"是安全的。
+            groups = css_groups_of(node)
+            if len(groups) > 1:
+                for gi in range(1, len(groups)):
+                    diff = []
+                    for key in groups[0]:
+                        if key == 'background_color':
+                            continue        # 这一项本来就该不一样
+                        a, b = groups[0].get(key), groups[gi].get(key)
+                        if a != b:
+                            diff.append(key)
+                    if diff:
+                        detail = ''
+                        if 'rect' in diff:
+                            r0 = groups[0]['rect'].get('rect') or {}
+                            r1 = (groups[gi].get('rect') or {}).get('rect') or {}
+                            detail = ('；普通 %d,%d %dx%d 高亮 %d,%d %dx%d'
+                                      % (r0.get('x', 0), r0.get('y', 0),
+                                         r0.get('width', 0), r0.get('height', 0),
+                                         r1.get('x', 0), r1.get('y', 0),
+                                         r1.get('width', 0), r1.get('height', 0)))
+                        rp.error(where,
+                                 'css[%d](高亮态)和 css[0](普通态)差在 %s —— 选中时框架会整份'
+                                 '换成高亮那份，这些字段必须一致%s'
+                                 % (gi, '/'.join(diff), detail))
 
             # --- 背景色
             bc = css.get('background_color', {})
