@@ -291,9 +291,18 @@ draw 背景图 / 边框 / 内容
 | `ui_pic_set_image_index(pic, 1)` 改**自己**（拿到的是 `ctr` 句柄） | ✅ 只写字段，不重绘 |
 | `ui_battery_set_level(battery, ...)` 改**自己** | ✅ 同上 |
 | `ui_register_msg_handler()` / `sys_timer_add()` / 申请页面私有状态 | ✅ 不碰控件 |
+| `ui_core_get_element_by_id(别的控件)` 查指针、读它的字段 | ✅ 只读，不碰绘制 |
 | `ui_pic_show_image_by_id(别的控件, n)` | ❌ 跨控件刷新 → 重入绘制 |
 
 要在 INIT 里刷别的控件，走 `ui_set_call()`，或者干脆交给定时器第一拍。
+
+⚠ **"控件 A 的初值要跟着控件 B 的状态"不要靠调顺序解决**，两个方向都是坑：
+A 排在 B 后面 → `by_id` 时 A 还没建出来，**静默丢弃**；排在前面 → 调用打进去
+但绘制期重入，**照样刷不上**。正解是掉个头 —— **谁的初值谁自己刷**：把
+`onchange` 挂在 A 上，A 在自己的 INIT 里读 B 的字段、用**非 `_by_id`** 的
+`ui_xxx_update(ctr, ...)` 改自己。这时 **A 要排在 B 之后**，才读得到 B 落好位
+的状态。一句话：**绘制期不准写别人，但可以读别人；要读就排在别人后面。**
+（`ui_list_count.h` 的 `DEFINE_LIST_COUNT_ONCHANGE` 是现成范例）
 
 正解是框架自带的 `ui_set_call(cb, 0)`，把刷界面推迟到本轮事件分发结束：
 

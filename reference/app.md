@@ -282,6 +282,51 @@ case ON_CHANGE_INIT:
 > **推论：`element is null` 警告不是噪声，是"这次调用被吞了"的回执。**
 > 看到它先问一句"我是不是在绘制期跨控件刷新了"，别当成无害的时序抖动。
 
+### 那"控件 A 的初值要跟着控件 B 的状态"怎么办：让 A 自己去读 B
+
+典型场景：列表标题栏右边挂一个"当前项/总项数"的计数器，进页面就得显示对。
+很自然会写成"在**列表**的 `ON_CHANGE_INIT` 里 `ui_number_update_by_id(计数器)`"
+—— 那就是上面这条规则，**两个方向都是坑，调顺序没用**：
+
+| 计数器在 `layout[]` 里的位置 | 结果 |
+|---|---|
+| 排在列表**后面** | 控件还没建出来，`by_id` 返回 `-22` 静默丢弃，屏上留着 `0/0` |
+| 排在列表**前面** | 调用真的打进去，绘制期重入，照样刷不上（严重时整页只剩零星几个控件）|
+
+**正解是掉个头：谁的初值，谁自己刷。** 分界从来不是事件名，是"碰不碰别的控件"：
+
+```c
+/* 挂在【计数器控件】上，不是挂在列表上 */
+#define DEFINE_LIST_COUNT_ONCHANGE(fn, list_id, total)                    \
+    static int fn(void *ctr, enum element_change_event e, void *arg)      \
+    {                                                                     \
+        struct element *_lst;                                             \
+        struct unumber _num;                                              \
+                                                                          \
+        if (e != ON_CHANGE_INIT) {                                        \
+            return FALSE;                                                 \
+        }                                                                 \
+        _lst = ui_core_get_element_by_id(list_id);   /* ✅ 只查指针 */    \
+        _num.type = TYPE_NUM;                                             \
+        _num.numbs = 2;                                                   \
+        _num.number[0] = _lst                        /* ✅ 只读字段 */    \
+                         ? (((struct ui_grid *)_lst)->hi_index + 1) : 1;  \
+        _num.number[1] = total;                                           \
+        ui_number_update((struct ui_number *)ctr, &_num);  /* ✅ 改自己 */ \
+        return FALSE;                                                     \
+    }
+```
+
+三个操作都安全：`ui_core_get_element_by_id()` 只是查指针，读 `hi_index`
+只是读字段，`ui_number_update()` 拿的是**自己的 `ctr` 句柄**（不是 `_by_id`
+版本），只写字段不重绘。
+
+⚠ 这时候顺序**反过来**要求：**A 要排在 B 之后**。A 的 INIT 里读 B 的状态，
+得等 B 自己的 `onchange` 先跑完（比如列表在它的 INIT 里 `ui_grid_set_item()`
+把光标落到当前生效项上），A 才读得到落好位的值。
+
+> 一句话：**绘制期不准写别人，但可以读别人**。要读，就排在别人后面。
+
 ### 写可复用 UI 模块时的硬约束
 
 把某个功能（律动条、进度条、状态图标组）抽成模块给多个页面调用时，
