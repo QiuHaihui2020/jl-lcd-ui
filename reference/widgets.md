@@ -277,6 +277,78 @@ ui_text_set_textw_by_id(LRC_TEXT_ID_NAME, file_name, len,
 `text_set_font_scroll_interval()`（默认 1000ms）分别管 strpic 和字库两条路。
 `scroll_start_cnt` / `end_cnt` 的单位是**次数**，实际停留时间 = 次数 × 间隔。
 
+### ⚠⚠ 列表里"只让选中那行滚动"：别用 `FONT_HIGHLIGHT_SCROLL`，自己控制
+
+`FONT_HIGHLIGHT_SCROLL` 名字看着就是干这个的，实测**在列表里起不来**。
+反编译 `ui_text.c.o` 的 `text_onchange()`，两个 flag 起 timer 的时机完全不同：
+
+| 事件 | `FONT_SHOW_SCROLL` (0x08) | `FONT_HIGHLIGHT_SCROLL` (0x10) |
+|---|---|---|
+| event 6 `ON_CHANGE_SHOW_POST`（绘制后） | `set_timer` 开滚 | **既不建也不删**，完全不管 |
+| event 8 `ON_CHANGE_HIGHLIGHT`，`arg != NULL` | 不管 | `set_timer` 开滚 |
+| event 8 `ON_CHANGE_HIGHLIGHT`，`arg == NULL` | 不管 | `del_timer` + `offset = 0` |
+
+也就是说 **`FONT_HIGHLIGHT_SCROLL` 唯一的起点是 `ON_CHANGE_HIGHLIGHT` 事件**。
+而这个事件发不发得出来，卡在 `ui_core_highlight_element()` 的第一句：
+
+```c
+if ((elm->flags & 1) == yes) return;   /* 高亮位没变化，直接返回，不发事件 */
+```
+
+**grid 切光标时已经自己把行置成高亮了**，应用层再调
+`ui_highlight_element_by_id()` 就是空操作，事件根本不发，
+文字控件也就没机会起 timer —— 现象是"选中的那行长文字照样截断"。
+
+> 顺带一提，flag 本身传得没问题：`ui_text_set_text_attrs()` 里是
+> `byte = (encode&3) | ((endian<<2)&4) | ((u8)flags << 3)`，
+> 存进一个 i8，`FONT_HIGHLIGHT_SCROLL`(bit4) 正好落在 byte 的 bit7，
+> 两处判定读的都是这一位。不是传丢了，是触发不到。
+
+**可靠做法：用 `FONT_SHOW_SCROLL`，由应用层决定哪一行滚。**
+歌名/歌词走的就是这条路，已验证。抽两个小函数：
+
+```c
+static void flist_text_show(int row, u32 flags)
+{
+    struct text_name_t *t = &__this->text_list[row];
+
+    if (t->unicode) {
+        ui_text_set_textw_by_id(TEXT_FNAME_ID[row], (char *)t->fname, t->len,
+                                FONT_ENDIAN_SMALL, flags);
+    } else {
+        ui_text_set_text_by_id(TEXT_FNAME_ID[row], (char *)t->fname, t->len, flags);
+    }
+}
+
+static void flist_scroll_row(int row, u8 on)
+{
+    u32 flags = FONT_DEFAULT;
+
+    if (row < 0 || row >= TEXT_PAGE || !__this->text_list[row].len) {
+        return;
+    }
+    if (on) {
+        /* RESET 让它从头滚，不然换行后会接着上一行的偏移继续 */
+        flags |= FONT_SHOW_SCROLL | FONT_SHOW_SCROLL_RESET;
+    }
+    flist_text_show(row, flags);
+}
+```
+
+接三个地方，**一个都不能少**：
+
+1. **刷新整页文本之后**（进目录、翻页、首次进入都走这里）：
+   先把所有行按 `FONT_DEFAULT` 铺上，末尾再
+   `flist_scroll_row(当前行, 1)`。
+2. **同页内光标下移**：`flist_scroll_row(旧行, 0)` + `flist_scroll_row(新行, 1)`。
+3. **同页内光标上移**：同上。
+
+⚠ 两条按键路径的行号算法**不一样**，抄的时候看清楚：
+`UI_KEY_DOWN` 分支里 `sel_item` 在函数开头已经 `++` 过（是移动**后**的行号，
+旧行是 `sel_item - 1`），`UI_KEY_UP` 分支里 `sel_item` 还是
+`ui_grid_cur_item()` 取的移动**前**的值（新行是 `sel_item - 1`）。
+框架是在 `return FALSE` 之后才真正移动光标的。
+
 ### ⚠⚠ 固定文案和运行时文字是两套完全独立的机制
 
 这决定了**哪些事 AI 能做、哪些必须人工**，排版前就要想清楚。
@@ -619,6 +691,58 @@ ui_slider_set_persent_by_id(FM_SLIDER, (fre - 8700) * 100 / (FREQ_MAX - 8700));
 int p = slider_get_percent(slider);
 slider_touch_slider_move(slider, e);     /* 触摸屏拖动 */
 ```
+
+### ⚠⚠ vslider 是"满格在上"：persent 越大滑块越靠上
+
+`vslider_pic_move()` 算滑块位置的公式（反编译 `ui_slider_vert.c.o`）：
+
+```c
+滑块 top = slider.top + (slider.height - pic.height) * (100 - persent) / 100;
+```
+
+**`persent = 100` 在顶、`0` 在底** —— 音量条、电量条那套语义。
+
+**文件列表这类"越往下翻滑块越往下"的场景方向正好相反，必须取反**：
+
+```c
+/* 直接把"已浏览比例"喂进去，滑块方向就是反的：
+ * 选第一项给接近 0% 落在底部，一路往下选反而爬到顶 */
+#define FLIST_SLIDER_PERSENT(idx, total)    (100 - ((idx) + 1) * 100 / (total))
+```
+
+### ⚠ persent 不会自己初始化，默认 0 就是最底部
+
+`struct ui_vslider.persent` 是 `zalloc` 出来的 0，**框架不会替你算初值**。
+只在按键处理里调 `ui_vslider_set_persent_by_id()` 的话，
+进页面第一眼看到的就是滑块贴在最底下，按一下方向键才归位。
+
+**把它放进"刷新列表内容"的那个函数末尾**，而不是散在各个按键分支里 ——
+进目录、翻页、从别的页返回这些路径就自动都覆盖到了。
+
+⚠ 挪进去之后注意**除零**：刷新函数往往在 `ON_CHANGE_FIRST_SHOW` 被
+`ui_set_call()` 无条件排队，而没插盘时 `ON_CHANGE_INIT` 里连文件系统都没建起来，
+总数还是 0。加一句 `if (total > 0)`。
+
+### ⚠⚠ 零件的绘制顺序：槽必须排在滑块**前面**
+
+`layout` 数组**靠后的画在上面**。仓库里原来的顺序是
+`unsel / sel / slider_pic / 槽`，**槽在最后，盖在滑块上**。
+
+这个顺序能用纯属巧合：老的 `VBAR_BG.png` 是 16 宽、只有中间 4px 不透明，
+滑块 16x32 里实心部分 10px 宽，**从槽两侧露出来**，所以看着没问题。
+一旦把槽改成整条不透明、又和滑块同宽（比如细滚动条 6px），
+**滑块就被整个盖住，表现为"滑块消失了"**。
+
+改成 `unsel / sel / 槽 / slider_pic`。
+
+### ⚠ 滑块和槽的图，尺寸必须等于各自 rect
+
+和别处一样，**框架不缩放图**。把 vslider 拉高（比如配 7 行 26px 的列表
+要 182 高）就得重出一张 182 高的槽图，沿用 120 高的老图下面会空一截。
+
+滑块那个零件（`slider_pic`）**没有 `normal_image` 属性，只有
+`element_css.background_image`** —— 脚本里给它换图别调 `set_imgs()`，
+会拿到 `None` 直接崩。
 
 ### ⚠⚠ slider 会吃掉方向键 —— 按键驱动的页面上放进度条必踩
 

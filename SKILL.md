@@ -206,6 +206,9 @@ ui_id2type(id) = (id >> 10) & 0x7f    // 控件类型码 CTRL_TYPE_*
 | `RING_MAX_TASK=40` 不是控件数上限，是任务块缓存大小 | `platform.md` |
 | **Text 默认是黑字**，改页面底色必须同时扫一遍这页所有 Text 的 color | `widgets.md` |
 | **slider 会吃掉方向键**（37/38/39/40），按键驱动的页面放进度条必踩 | `widgets.md` |
+| **vslider 是"满格在上"**：`persent` 越大滑块越靠上（100 在顶、0 在底）。<br>文件列表这类"越往下翻滑块越往下"要**取反**；而且 `persent` 默认 0 就是最底，<br>框架不给初值，得在"刷新列表内容"那个函数里主动设 | `widgets.md` |
+| vslider 零件的**绘制顺序：槽必须排在滑块前面**（数组靠后画在上面）。<br>仓库原来是反的，能用只因老槽图大部分透明、滑块从两侧露出来 | `widgets.md` |
+| 列表里"只让选中那行滚动"**别指望 `FONT_HIGHLIGHT_SCROLL`** —— 它只在<br>`ON_CHANGE_HIGHLIGHT` 里起 timer，而 grid 自己切光标时高亮位已经变过了，<br>`ui_core_highlight_element()` 开头就 return，事件根本不发。<br>改用 `FONT_SHOW_SCROLL` 由应用层自己决定哪行滚 | `widgets.md` |
 | 定时器/按键回调里**不要调音频侧的硬件加速接口**（FFT 等），会饿死整个 UI 任务 | `platform.md` |
 | 加新 `.c` 改的是 `build/genFileList.c`，不是 `build/fileList.c` | `app.md` |
 
