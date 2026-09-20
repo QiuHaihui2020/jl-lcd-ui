@@ -136,7 +136,7 @@ isd_download.exe ... -ex_flash res.bin ...
 经 `EX_FLASH_IMAGE_SIZE` 传给 `fat_comm -image-size`。
 两处改不一致会导致镜像大小和实际容量对不上。
 
-## 6. 多国语言表 —— 加新文案是人工活
+## 6. 多国语言表 —— 固定文案的唯一正路
 
 文字内容不在工程 json 里，在 `UITools/多国语言_*.xls`（路径由工程根的
 `lang_excel` 和 `ResBuilder.xml` 的 `<excel_path>` 指定）。
@@ -149,27 +149,123 @@ isd_download.exe ... -ex_flash res.bin ...
 
 ⚠ `str.list` 里写了表里没有的 id：**不报错**，运行时那条就是空白。
 
-### ⚠ AI 加不了新文案，两条出路
+### ⚠⚠ 铁律：运行时不变的文字，一律往表里加条目，不要渲染成图
 
-`.xls` 是二进制文件，**只能人工开表格改**。所以"给界面加一句新文案"
-这件事，AI 做不完整。两个办法：
+界面上的标题、菜单项名、状态词、单位标签……**只要运行时不变，正确做法就是
+往 xls 加一行、用 Text + `code=strpic` 引用它**。
 
-| 办法 | 怎么做 | 代价 |
-|---|---|---|
-| 人工加 | 开 `多国语言_*.xls` 加一行，记下新 id，填进 `str.list`，重跑 step2 | 要人；但跟随语言切换 |
-| **预渲染成图片** | 自己把文案渲染成 PNG，用 `ImageList` 摆上去 | **不跟随语言切换** |
+自己渲染成 PNG 用 ImageList 摆上去，在编辑器里看着一样，但丢了三样东西：
+不跟随语言切换；字号和同页其它文案对不上（strpic 的字号是 xls 单元格定的，
+你渲染时并不知道是多少）；以后改文案要重新出图而不是改表格。
 
-第二条是完全正当的做法，不是将就 —— 因为固定文案本来走的就是
-"资源生成时离线渲染成位图"这条路（见 `platform.md` 第 6 节），
-自己渲染只是换了个渲染的人。对"最高温度""周六""℃"这类固定标签尤其合适，
-还顺带绕开了字库不一定有那个字形的问题。
+> 实战里当场露馅过：设置页五行，四行是 strpic、其中一行因为"表里没有这句"
+> 拿图做。图里的字居中、Text 是 `ALIGN_LEFT`，字号又是自己定的 16px，
+> 和 strpic 的宋体 24 对不上 —— 用户一眼看出那行"歪了"。
+> 而 json 上完全看不出问题，`check_project.py` 也不会报。
 
-**多语言产品就老老实实改 xls。**
+**只有这几种情况才用图**：字库或表里没有那个字形；设计稿要的是特殊字形/特殊字号；
+整块内容本来就是图（logo、艺术字）。
+
+⚠ 别和 **Number / Time 的数字图集**搞混。那两个控件靠 `number.list` 里的图片
+拼数字是**框架机制**（见 `widgets.md`），和这条规矩无关，照用不误。
+
+### ⚠ 别拿近义条目将就
+
+表里现有条目语义对不上时（要"歌曲列表"而表里只有"播放列表"、要"恢复默认"
+而表里是"出厂设定"），**加新条目，不要凑合**。凑合的代价是界面文案和设计稿
+对不上，过一阵没人记得当初为什么不一样。
+
+### 怎么加：Windows 上用 Excel COM，格式一点不丢
+
+`.xls` 是 OLE2 复合文档，但**不必人工开表格** —— 装了 Excel 的 Windows 机器
+可以用 COM 自动化加行。
+
+> 不要用 `xlwt` / `xlutils.copy` 那条路：它保留单元格格式的能力有限，
+> 而 **strpic 的字号就在单元格格式里**，丢了就是整批文案的位图高度全变。
+
+`.ps1` 写成纯 ASCII，中文和路径走一份 UTF-8 的 JSON 传进去
+（Windows PowerShell 5.1 读无 BOM 的 `.ps1` 按 ANSI 解码，中文直接乱码）：
+
+```powershell
+param([Parameter(Mandatory=$true)][string]$Json)
+$ErrorActionPreference = 'Stop'
+$cfg = Get-Content -LiteralPath $Json -Encoding UTF8 -Raw | ConvertFrom-Json
+
+$app = New-Object -ComObject Excel.Application
+$app.Visible = $false
+$app.DisplayAlerts = $false          # 否则另存 .xls 会弹兼容性检查
+$wb = $null
+try {
+    $wb = $app.Workbooks.Open($cfg.xls)
+    $ws = $wb.Sheets.Item(1)
+    $first = [int]$cfg.firstRow
+    $last  = $first + $cfg.rows.Count - 1
+
+    # 数据行下面那些空行的格式【不统一】，必须从已知正确的行克隆
+    $ws.Rows.Item([int]$cfg.templateRow).Copy() | Out-Null
+    $ws.Range("A$first`:A$last").EntireRow.PasteSpecial(-4122) | Out-Null   # xlPasteFormats
+
+    $r = $first
+    foreach ($row in $cfg.rows) {
+        $ws.Cells.Item($r, 1).Value2 = $row[0]      # ResID
+        $ws.Cells.Item($r, 2).Value2 = $row[1]      # Chinese_Simplified
+        $ws.Cells.Item($r, 3).Value2 = $row[2]      # Chinese_Traditional
+        $ws.Cells.Item($r, 6).Value2 = $row[3]      # English
+        $r++
+    }
+    $wb.Save()                       # 保持 BIFF8，别 SaveAs 成 xlsx
+}
+finally {
+    if ($wb -ne $null) { $wb.Close($false) }   # 中途抛异常也不会写坏原文件
+    $app.Quit()
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null
+}
+```
+
+三个会当场卡住的点：
+
+1. **格式从"最后一个好行"克隆，别指望空行。** 实测本仓库的表里，数据行
+   （m1..m97）下面的空行格式**不统一** —— 简体中文列有一行是 Times New Roman
+   而不是宋体，同样 24 号下位图高 27 而不是 24。直接往空行填字就踩这个。
+2. **别碰 `$app.CutCopyMode`。** 强类型 interop 既不收 `0` 也不收 `$false`
+   （只认 `xlCopy`/`xlCut` 枚举），会抛 `Cannot convert value ... to type
+   XlCutCopyMode`。不设它没有任何副作用，写单元格本身就会结束复制模式。
+3. **`$wb.Close($false)` 要放进 `finally`。** 实测中途抛了两次异常，
+   因为这一句，原表都完好无损。
+
+加完**一定要读回验证**，确认新行的字体字号和模板行一致：
+
+```python
+import xlrd
+b = xlrd.open_workbook(PATH, formatting_info=True)     # 只读，装 xlrd 就够
+sh = b.sheet_by_index(0)
+
+def font_of(r, c):
+    f = b.font_list[b.xf_list[sh.cell_xf_index(r, c)].font_index]
+    return (f.name, f.height / 20.0)
+
+ref = font_of(97, 1)                                   # 已知正确的那行
+bad = [r for r in range(98, 109) if font_of(r, 1) != ref]
+print('字体和模板行不一致的:', bad or '无')
+```
+
+### ⚠ str id 存在性没有工具兜底，得自己比对
+
+`check_project.py` **不查** `str.list` 里的 id 在不在表里 —— `project.md` §9
+那份自查清单说"1-7、9 跑 check_project 能兜住"，**第 8 条正是它没覆盖的那条**。
+而写了个表里没有的 id 是**不报错**的，运行时那条就是空白。改完自己跑一遍：
+
+```python
+table = {str(sh.cell_value(r, 0)).strip() for r in range(1, sh.nrows)
+         if str(sh.cell_value(r, 0)).strip()}
+miss = [(en, sid) for en, sid in 工程里所有 (ename, str_id) if sid not in table]
+```
 
 ### ⚠⚠ 字号也在 xls 里 —— 是**单元格自己的字号**，不是 `<Fonts>`
 
 `ResBuilder.xml` 里那 22 个 `<fontNN lfHeight="-16"/>` 看着像字号配置，
-**改它对 strpic 完全没用**。要改固定文案字号只有一条路：开 Excel 全选改字号，
+**改它对 strpic 完全没用**。字号只能在 xls 里改：开 Excel 全选改字号，
+或者走上面那套 COM（`$ws.Range(...).Font.Size = 24`），
 存成 `.xls`(BIFF8，别存成 xlsx)，重跑 step2 + `copy_file.bat`。
 完整实测证据见 `platform.md` §6。
 

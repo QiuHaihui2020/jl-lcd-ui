@@ -193,14 +193,16 @@ ui_id2type(id) = (id >> 10) & 0x7f    // 控件类型码 CTRL_TYPE_*
 | 框架**不拷贝字符串**，`ui_text_set_*` 传的 buf 必须是全局/静态 | `widgets.md` |
 | 要透明必须 **RGBA PNG + `ARGB8565`**，代价是 +50% 资源 | `platform.md` |
 | 框架**不缩放图片**，图比 rect 大就被裁 | `platform.md` |
-| 固定文案和运行时文字是**两套独立机制**，AI 加不了新文案 | `platform.md` / `export.md` |
+| 固定文案和运行时文字是**两套独立机制**；**运行时不变的文字一律加进多国语言表<br>用 Text+strpic，不要渲染成图**（`.xls` 能用 Excel COM 自动加行，不必人工） | `platform.md` / `export.md` |
+| `check_project.py` **不查** `str.list` 的 id 在不在语言表里，<br>写了个不存在的 id 不报错、运行时那条是空白 | `export.md` |
 | `ui_get_disp_status_by_id()` 返回 1/0/-14，**头文件注释是反的** | `app.md` |
 | 它还**判不出"被同页弹层盖住"**（弹层不会 hide 主布局），<br>遮挡只能由弹层在 `ON_CHANGE_SHOW/HIDE` 里自己告知 | `app.md` |
 | 弹层的显示/隐藏配对**只能用 `ON_CHANGE_SHOW/HIDE`**；<br>`INIT` 只发一次、`RELEASE` 只在销毁时发，用错 = 第一次弹窗后再也不恢复 | `app.md` |
 | 被盖住的控件**刷屏不但没用还更贵**（要连带重新合成上面的弹层） | `app.md` |
 | **每次 `ui_pic_show_image_by_id()` 要重读 ~14 次资源文件**（元数据不缓存）；<br>按拍刷多个控件之前先算这笔账 | `platform.md` |
 | `ui_lock_layer()` / `ui_unlock_layer()` 在 br28 上是**死代码**（`dc->buf_num` 写死 1） | `platform.md` |
-| Text 两个同名 `color` 里**第二个是选中高亮色**，去重时合并会静默丢掉高亮 | `widgets.md` |
+| Text 两个同名 `color` 里**第二个是选中高亮色**，去重时合并会静默丢掉高亮；<br>两项写成同值也一样没高亮（本仓库约定 常态 `#ffa6b8d8` / 高亮 `#ffffffff`） | `widgets.md` |
+| **Time 可以带两份 `element_css`**，第二份是高亮态，选中时框架整份换掉（`rect` 也在里面）；<br>`ui-tools` 只编辑第一份，GUI 里挪过位置就会错位，症状是"一选中控件就跳走" | `widgets.md` |
 | `RING_MAX_TASK=40` 不是控件数上限，是任务块缓存大小 | `platform.md` |
 | **Text 默认是黑字**，改页面底色必须同时扫一遍这页所有 Text 的 color | `widgets.md` |
 | **slider 会吃掉方向键**（37/38/39/40），按键驱动的页面放进度条必踩 | `widgets.md` |
