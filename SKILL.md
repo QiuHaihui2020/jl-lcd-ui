@@ -1,6 +1,6 @@
 ---
 name: jl-lcd-ui
-description: 杰理(JL)彩屏 UI 框架的界面开发，图层走 OSD16、设备端由 IMB 硬件合成。做界面布局（直接编辑 .uiproj/.json 工程脚本）、选控件、给控件写应用层回调、生成并导出资源、适配新屏和新分辨率时用。涉及 LCD_UI工程/UITools GUI 工具链、控件库 control.json、控件 ID 位域规则、REGISTER_UI_EVENT_HANDLER 事件注册、ename.h/style_JL_new.h 绑定、JL.sty/JL.res/JL.str 产物、SPI/MCU/RGB 屏驱动（st7789 等）。不适用于单色点阵屏（OSD1，那套看 jl-dot-ui）。
+description: 杰理(JL)彩屏 UI 框架的界面开发，图层走 OSD16、设备端由 IMB 硬件合成。做界面布局（直接编辑 .uiproj/.json 工程脚本）、选控件、给控件写应用层回调、生成并导出资源、适配新屏和新分辨率时用；排查界面异常也用——图不显示或被裁、透明区发黑发白、整页只剩一两个控件、文字不显示或是黑的、字号改了不生效、一选中控件就跳走、滑条吃掉方向键、列表行高不对、进度条/滑块方向反了、刷屏卡顿、新加的 .c 没被编译进去、编辑器预览和实机对不上、改动自己消失了。也覆盖做素材（字号反推、量参考图、透视校正、取底色、透明 PNG 与 ARGB8565）、多国语言表与固定文案、控件 ID 位域算法、REGISTER_UI_EVENT_HANDLER 事件注册、ename.h/style_JL_new.h 绑定、JL.sty/JL.res/JL.str 产物与 res 分区烧录、SPI/MCU/RGB 屏驱动（st7789 等）、反编译 ui_new.a 查框架真实行为。不适用于单色点阵屏（OSD1，那套看 jl-dot-ui）。
 ---
 
 # 杰理彩屏 UI 开发
@@ -56,6 +56,33 @@ description: 杰理(JL)彩屏 UI 框架的界面开发，图层走 OSD16、设�
 
 ---
 
+## ⚠ 动手前的强制阅读
+
+**本 SKILL.md 里的每一条（尤其铁律 1.5 那张表）都是一句话摘要，不足以照着动手。**
+下表命中哪一行，就先把对应文件的那一节读完再改——
+这不是"有空再看"，下面每条都是实战里漏读踩出来的。
+
+| 你要做的事 / 你看到的现象 | 动手前必须读 |
+|---|---|
+| 用脚本读写工程 `.json` | `reference/project.md` §0 固定模板（漏了就是 5000 行假 diff） |
+| 动某一个控件（挪位置 / 改大小 / 换图 / 改文字 / 改颜色） | `reference/widgets.md` **那个控件的整节**，不是只看摘要 |
+| 拿不准该用哪个控件 | `reference/widgets.md`「选型速查」+「两个都能做的时候选哪个」 |
+| 新建页 / 图层 / 布局 / 弹层，或复用既有 ename | `reference/authoring.md` |
+| 插了控件 / 复制了控件，要确认 ID | `reference/project.md` §3 + 跑 `tools/gen_ename.py --check` |
+| 写 / 改 action 回调 | `reference/app.md` §3 生命周期（含 `ON_CHANGE_INIT` 那个最阴的坑） |
+| 做图、改图、改图集尺寸或目录名 | `reference/assets.md` + `reference/platform.md` §4 图片格式 |
+| 加固定文案 / 改字号 / 动多国语言表 | `reference/export.md` §6（字号在 xls 单元格，不在 `<Fonts>`） |
+| 改页面底色 | `reference/widgets.md`「改页面底色时必须扫一遍所有 Text 的颜色」 |
+| 改列表行高 / 条目间距 | `reference/widgets.md` **列表那一节**（`sizehw`/`space` 在那，`property` 里找不到） |
+| 做整行高亮 / 选中态 | `reference/widgets.md`「双 css」那一节 |
+| 屏上现象说不清（发黑发白、被裁、卡顿、合成不对） | `reference/platform.md` §9 现象对照表，再按它指的节去读 |
+| 换屏 / 改分辨率 / 加屏驱动 | `reference/platform.md` §8 |
+| 加新 `.c`、改编译、导出进固件、烧录 | `reference/app.md` §2 + `reference/export.md` |
+
+按关键词 grep 比按行号截一段读更靠谱。
+
+---
+
 ## 工作循环
 
 **这套工具链没有命令行**（`ui-tools.exe` / `QtToolBin.exe` 都是 Qt GUI，
@@ -93,37 +120,9 @@ description: 杰理(JL)彩屏 UI 框架的界面开发，图层走 OSD16、设�
 ### ⚠⚠ 改 json 之前先确认 GUI 已经关了
 
 **`ui-tools.exe` 保存时，是拿它"打开那一刻的内存副本"整份覆盖文件的。**
-所以 AI 和人同时动一个工程时会出现这种事：
 
-```
-13:35  人打开 ui-tools（内存里是此刻的 json）
-13:38  AI 改 json 写盘（65 处背景色改成空串）
-13:41  人在 GUI 里点保存 → 整个文件被 13:35 的副本覆盖
-       → AI 的改动连同页名、布局背景色一起消失
-```
-
-现象非常迷惑：**改动"自己消失了"**，而且 `git diff` 干净得像没改过。
-这不是工具在做格式规范化（`BT_Watch` 里 11 处空串好端端留着，
-说明工具会保留空串），纯粹是 stale buffer 覆盖。
-
-两条规矩：
-
-- **AI 动 json 前，确认 ui-tools 已关闭**（改之前问一句，或看有没有 `.lock`/临时文件）。
-- **人在 GUI 里保存过之后，AI 必须重新读文件再改** —— 不要基于之前读到的内容继续改。
-
-踩一次就是白干一轮。
-
-### 配套做法：每次写盘后记一份属性快照
-
-光"重读再改"不够 —— **重读之后你分不清哪些差异是人有意改的、哪些是误碰的**。
-
-所以 AI 每次写盘后，把自己动过的关键属性记成一张表
-（实战里是 22 个 rect + 4 个 format + 3 个 align + 动画参数）。
-人在 GUI 里动过之后跑一次比对，两类差异立刻分得开。
-
-这个做法在实战里当场查出：主布局底色被误改、3 个 rect 被动过，
-其中一个把星期控件的高度从 20 改成 18 —— **会把图裁掉 2px**，
-而这种改动在界面上几乎看不出来，不比对根本发现不了。
+> 本节全文（含「配套做法：每次写盘后记一份属性快照」）已移至
+> **`reference/project.md` §0.5**，未作改写。动 json 前先读那节。
 
 ---
 
@@ -375,7 +374,9 @@ REGISTER_UI_EVENT_HANDLER(ID_WINDOW_BT)
 
 ---
 
-## 参考资料（按需读，别一次全看）
+## 参考资料一览
+
+上面那张强制阅读表是入口；这张表是全貌，用来找"我这件事该去哪查"。
 
 | 文件 | 什么时候读 |
 |---|---|
@@ -396,7 +397,7 @@ REGISTER_UI_EVENT_HANDLER(ID_WINDOW_BT)
 > 结果绕了一大圈去反编译，还改漏了参数。
 > 按关键词 grep 比按行号截一段读更靠谱。
 
-## 随 skill 带的三个脚本
+## 随 skill 带的五个脚本
 
 ```
 tools/dump_tree.py      把几 MB 的工程 json 打成可读的树（带算出来的 ID）

@@ -296,7 +296,7 @@ case ON_CHANGE_INIT:
 **正解是掉个头：谁的初值，谁自己刷。** 分界从来不是事件名，是"碰不碰别的控件"：
 
 ```c
-/* 挂在【计数器控件】上，不是挂在列表上 */
+/* 现成范例在 `ui_list_count.h`；挂在【计数器控件】上，不是挂在列表上 */
 #define DEFINE_LIST_COUNT_ONCHANGE(fn, list_id, total)                    \
     static int fn(void *ctr, enum element_change_event e, void *arg)      \
     {                                                                     \
