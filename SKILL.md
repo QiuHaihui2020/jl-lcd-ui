@@ -199,6 +199,7 @@ ui_id2type(id) = (id >> 10) & 0x7f    // 控件类型码 CTRL_TYPE_*
 | 弹层的显示/隐藏配对**只能用 `ON_CHANGE_SHOW/HIDE`**；<br>`INIT` 只发一次、`RELEASE` 只在销毁时发，用错 = 第一次弹窗后再也不恢复 | `app.md` |
 | 被盖住的控件**刷屏不但没用还更贵**（要连带重新合成上面的弹层） | `app.md` |
 | **每次 `ui_pic_show_image_by_id()` 要重读 ~14 次资源文件**（元数据不缓存）；<br>按拍刷多个控件之前先算这笔账 | `platform.md` |
+| **每次 `ui_core_redraw()` 都遍历整个图层**（约 7ms 固定开销，和区域大小无关）；<br>按拍改 N 个控件：只 `ui_pic_set_image_index()`，最后重绘一次包住它们的小布局 | `platform.md` |
 | `ui_lock_layer()` / `ui_unlock_layer()` 在 br28 上是**死代码**（`dc->buf_num` 写死 1） | `platform.md` |
 | Text 两个同名 `color` 里**第二个是选中高亮色**，去重时合并会静默丢掉高亮；<br>两项写成同值也一样没高亮（本仓库约定 常态 `#ffa6b8d8` / 高亮 `#ffffffff`） | `widgets.md` |
 | **布局/图片/文字/时间都可以带两份 `element_css`**，第二份是高亮态，选中时框架<br>整份换掉（`rect` 也在里面）。这是做**整行高亮**的正路，**应用代码一行不用写**；<br>两份的差异只该在 `background_color`(直角) 或 `background_image`(可圆角)。<br>`ui-tools` 只编辑第一份，GUI 里挪过位置就会错位，症状是"一选中控件就跳走" | `widgets.md` |

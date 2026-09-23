@@ -427,6 +427,101 @@ ui_pic_show_image_by_id(id, index)
 - 真要降载，按性价比是：切 `INSIDE_FLASH`（**整个 UI 都受益**，代价是烧写流程变）
   > 降刷新率 > 减控件数。
 
+> 上面"合成反而不是大头"是 `EXTERN_FLASH` 那套配置的结论。换一套配置（下一节，
+> QSPI 屏 + TE 同步）量下来，大头变成了**每次重绘的固定开销**。两节要一起看，
+> 以自己板子上的分项实测为准。
+
+### ⚠⚠ 每次 `ui_core_redraw()` 都遍历整个图层：按拍刷多个控件要合并成一次重绘
+
+**律动条这类"每拍改 N 个控件"的页面，逐个 `ui_pic_show_image_by_id()` 是错的做法。**
+
+反编译 `ui_new.a` 的调用链：
+
+```
+ui_pic_show_image_by_id(id, index)
+├─ ui_pic_set_image_index()      只写序号字段(会读资源元数据, 见上一节), 不重绘
+└─ ui_core_redraw(elm)
+   ├─ ui_core_get_dc()           从控件往上找到所在【图层】
+   ├─ ui_core_get_draw_area()    重绘区域 = 控件矩形(∩ 一次性的 redraw_area)
+   ├─ redraw_elms(图层)          按行分块遍历【整个图层】的可见控件
+   └─ put_draw_context()         imb_start: IMB 合成 + 推屏(屏驱有 TE 同步时在这里等 TE)
+```
+
+实测（BR28 + JD9853 QSPI 240×280、38.4MHz、开 TE 同步、音乐页约 30 个可见控件）：
+在平台层 `br28_draw_image()` 里逐次打印，**重绘一根 10×67 的柱子，框架也会对整层
+约 30 个可见控件调用 draw_image**，包括和重绘区域完全不相交的状态栏（y=1）和底部
+按钮（y=227）。按区域裁剪发生在后面的 IMB 合成那一层，不在控件遍历这一层。
+所以**每次重绘有约 7ms 的固定开销，和重绘区域大小无关**，推屏时还可能要等一次 TE。
+
+后果：逐根刷，每拍变化 7~9 根 ≈ 85~110ms，占掉 120ms 周期的大半。`sys_timer`
+挂在 UI 任务里，UI 任务回不到消息循环，`timer_no_response: ui` 刷屏。
+
+#### 正确做法：只改序号，最后重绘一次只包住这组控件的小布局
+
+1. UI 工程里新建一个**嵌套布局**，只包住这组控件（例如 `MUSIC_SPEC_LAYOUT`），
+   **背景色留空串**（透明，铁律 4），把 N 根柱子按原顺序搬进去，坐标改成相对小布局。
+   - 小布局插在原来第一根柱子的位置：PIC 的遍历顺序不变，**柱子 ID 不变**；
+     同页后面的 LAYOUT 序号会顺延，导出时工具覆盖 ID 头，ename 不变就不用改代码。
+   - 多个页面各有一组时，**各页小布局的 rect 保持一致**，方便维护。
+2. 代码每拍：变化的控件只调 `ui_pic_set_image_index()`，不重绘；最后
+   `ui_core_redraw(小布局)` 一次。**全是公开接口。**
+
+```c
+for (i = 0; i < bands; i++) {
+    if (level[i] == shown[i]) {
+        continue;                               /* 值没变不碰 */
+    }
+    e = ui_core_get_element_by_id(band_id[i]);
+    if (e == NULL) {
+        continue;
+    }
+    shown[i] = level[i];
+    ui_pic_set_image_index((struct ui_pic *)e, level[i]);   /* 只写字段 */
+    changed++;
+}
+layout = (changed > 0) ? ui_core_get_element_by_id(layout_id) : NULL;
+if (layout != NULL) {
+    ui_core_redraw(layout);                     /* 整拍只重绘一次 */
+}
+```
+
+⚠ 这段在**定时器/消息回调**里调，不能放进绘制期回调（铁律 5）。
+
+实测效果（同上配置，120ms 一拍，每拍约 12 根变化）：
+
+| 项 | 每拍 | 说明 |
+|---|---|---|
+| 整拍 | 平均 25ms，最大 40~52ms | 约占周期的 21%，`timer_no_response` 消失 |
+| set_index | 约 7ms | 每根约 0.55ms，读资源元数据（上一节） |
+| redraw | 约 18ms | 下面三项之和 |
+| ├ put_dc | 10~11ms | 其中 **TE 等待 7~8ms**，真正推屏约 3ms |
+| ├ 框架库内部 | 约 5.4ms | 图层遍历、样式等，闭源 |
+| └ draw_image | 约 2.1ms | 30 次 × 约 70us |
+
+#### 没用或不推荐的做法
+
+| 做法 | 结论 |
+|---|---|
+| 把别的控件（时间/进度条/按钮）也各收进小布局 | **不降开销**：遍历的是整个图层，draw_image 仍是 30 次。只起整理结构的作用 |
+| 缩小重绘区域 | 固定开销和区域大小无关 |
+| `ui_core_redraw_area(&rect)` + `ui_core_redraw(父布局)` | 能用（实测每拍 22~29ms，和小布局差不多），但它是 `ui_new.a` 导出、**头文件没声明**的内部接口，换库有风险。优先用小布局 |
+| `ui_lock_layer()` 批量画 | br28 上是死代码（下一节） |
+| 关 TE 同步、限制每拍重绘根数 | 治标，会带来撕裂或效果变差，不要在没有分项数据时拍脑袋做 |
+
+#### 先量再改：分项计时的埋点位置
+
+优化之前先拿到每一步的实际耗时，别按"估计每根 4ms 花在 TE"去动手。
+埋点都在有源码的平台层，只在被测的那段重绘期间打开统计（排除歌词/时间等其他刷新）：
+
+| 埋点 | 位置 |
+|---|---|
+| 整拍 / set_index / redraw | 业务刷新函数里包 `jiffies_usec()` |
+| `br28_read_image_info` / `br28_draw_image` / `br28_put_draw_context` | `ui_platform.c` 的框架回调，原函数改名 `*_raw`，外面包一层计时 |
+| TE 等待 | 屏驱的 `te_wait` 回调 |
+| 画了哪些控件 | 在 `br28_draw_image` 包装里打印 `dc->elm` 的 id / parent / rect，只追踪一次重绘 |
+
+用一个 `XX_PERF_EN` 宏整体开关，调完默认关掉。
+
 ### ⚠ `ui_lock_layer()` / `ui_unlock_layer()` 在 br28 上是死代码
 
 头文件（`ui.h`）写得像是"锁住图层批量画完再一次推给 IMB"，看着正好能解决上面
@@ -562,6 +657,7 @@ timer_no_response: ui, ..., 100, ...        ← 两个 100ms 定时器同时不�
 | 画面整体偏移或底部少一条 | 屏驱动 `SCR_X/SCR_Y` 没按面板在 GRAM 里的位置写 |
 | 换了工程后所有控件都找不到 | ID 头和资源不是同一次导出的（export.md） |
 | 刷新卡顿/费电 | 常驻页面上有滚动文字或 `play_mode` 轮播图；控件太多 |
+| 按拍刷多个控件时 `timer_no_response: ui` | 逐个 `show_image_by_id` = 每拍 N 次整层重绘，改成合并重绘小布局（§7） |
 | 开了特效就死机/花屏 | 没有 PSRAM（`ENABLE_PSRAM_UI_FRAME == 0`）却用了整帧特效 |
 
 ## 10. 查框架实际行为的办法
